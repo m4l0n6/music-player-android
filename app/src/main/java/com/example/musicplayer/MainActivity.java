@@ -1,13 +1,15 @@
+
 package com.example.musicplayer;
 
 import android.content.Intent;
 import android.os.Bundle;
+import android.os.Handler;
+import android.os.Looper;
 import android.text.Editable;
 import android.text.TextWatcher;
 import android.util.Log;
 import android.view.MenuItem;
 import android.view.View;
-import android.widget.Button;
 import android.widget.EditText;
 import android.widget.ImageView;
 import android.widget.TextView;
@@ -20,7 +22,12 @@ import androidx.drawerlayout.widget.DrawerLayout;
 import androidx.recyclerview.widget.LinearLayoutManager;
 import androidx.recyclerview.widget.RecyclerView;
 
+import com.example.musicplayer.api.SpotifyApi;
+import com.example.musicplayer.api.SpotifySearchResponse;
+import com.example.musicplayer.api.SpotifyTrack;
+import com.example.musicplayer.chatbot.ChatbotActivity;
 import com.example.musicplayer.libary.LibraryActivity;
+import com.example.musicplayer.playlist.PlayerActivity;
 import com.example.musicplayer.playlist.PlaylistsActivity;
 import com.example.musicplayer.profile.AboutActivity;
 import com.example.musicplayer.profile.FavoritesActivity;
@@ -29,8 +36,10 @@ import com.example.musicplayer.profile.ProfileActivity;
 import com.example.musicplayer.profile.SettingsActivity;
 import com.google.android.material.floatingactionbutton.FloatingActionButton;
 import com.google.android.material.navigation.NavigationView;
+import com.google.gson.JsonObject;
 
 import java.util.ArrayList;
+import java.util.List;
 
 import retrofit2.Call;
 import retrofit2.Callback;
@@ -38,54 +47,175 @@ import retrofit2.Response;
 import retrofit2.Retrofit;
 import retrofit2.converter.gson.GsonConverterFactory;
 
-public class MainActivity extends AppCompatActivity implements NavigationView.OnNavigationItemSelectedListener {
+public class MainActivity extends AppCompatActivity implements NavigationView.OnNavigationItemSelectedListener, MusicAdapter.OnItemClickListener {
 
     private static final String TAG = "MainActivity";
+    private static final String API_BASE_URL = "http://192.168.30.28:5030/";
+    private static final long SEARCH_DELAY = 500; // 500ms delay for search
 
-    // DrawerLayout
+    // UI Components
     private DrawerLayout drawerLayout;
     private NavigationView navigationView;
-
-    // Main content
     private RecyclerView recyclerView;
-    private ArrayList<Song> songList;
-    private ArrayList<Song> allSongs; // Lưu tất cả bài hát để lọc
-    private MusicAdapter adapter;
-
-    // Search bar
     private EditText etSearchBar;
+
+    // Data
+    private ArrayList<Song> songList;
+    private ArrayList<Song> allSongs; // To restore after search
+    private MusicAdapter adapter;
+    private SpotifyApi spotifyApi;
     private boolean isSearching = false;
 
-    // Mini Player views
-    private View miniPlayer;
-    private TextView tvMiniPlayerTitle;
-    private TextView tvMiniPlayerArtist;
-    private TextView btnMiniPlayerPlay;
-    private TextView btnMiniPlayerNext;
-
-    private Button btnChatBot;
+    // Search handler
+    private Handler searchHandler = new Handler(Looper.getMainLooper());
+    private Runnable searchRunnable;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
         setContentView(R.layout.activity_main);
 
+        setupRetrofit();
         setupDrawer();
         setupRecyclerView();
         setupTopBar();
-        setupSearchBar(); // Thêm setup cho thanh tìm kiếm lớn
+        setupSearchBar();
         setupTabs();
         setupChatbot();
-        loadSongsFromApi();
+
+        loadRecommendedSongs(); // Load initial songs
     }
+
+    private void setupRetrofit() {
+        Retrofit retrofit = new Retrofit.Builder()
+                .baseUrl(API_BASE_URL)
+                .addConverterFactory(GsonConverterFactory.create())
+                .build();
+        spotifyApi = retrofit.create(SpotifyApi.class);
+    }
+
+    private void loadRecommendedSongs() {
+        Log.d(TAG, "Loading recommended songs from Spotify API...");
+
+        JsonObject requestBody = new JsonObject();
+        requestBody.addProperty("seed_genres", "pop,rock,vietnamese");
+        requestBody.addProperty("limit", 20);
+
+        spotifyApi.getRecommendations(requestBody).enqueue(new Callback<List<SpotifyTrack>>() {
+            @Override
+            public void onResponse(Call<List<SpotifyTrack>> call, Response<List<SpotifyTrack>> response) {
+                if (response.isSuccessful() && response.body() != null) {
+                    updateSongList(response.body());
+                } else {
+                    Toast.makeText(MainActivity.this, "Error loading songs", Toast.LENGTH_SHORT).show();
+                }
+            }
+
+            @Override
+            public void onFailure(Call<List<SpotifyTrack>> call, Throwable t) {
+                Toast.makeText(MainActivity.this, "Failure: " + t.getMessage(), Toast.LENGTH_SHORT).show();
+            }
+        });
+    }
+
+    private void searchSongs(String query) {
+        Log.d(TAG, "Searching for: " + query);
+
+        JsonObject requestBody = new JsonObject();
+        requestBody.addProperty("query", query);
+        requestBody.addProperty("limit", 20);
+
+        spotifyApi.searchTracks(requestBody).enqueue(new Callback<SpotifySearchResponse>() {
+            @Override
+            public void onResponse(Call<SpotifySearchResponse> call, Response<SpotifySearchResponse> response) {
+                if (response.isSuccessful() && response.body() != null) {
+                    updateSongList(response.body().tracks);
+                } else {
+                    Toast.makeText(MainActivity.this, "Search failed", Toast.LENGTH_SHORT).show();
+                }
+            }
+
+            @Override
+            public void onFailure(Call<SpotifySearchResponse> call, Throwable t) {
+                Toast.makeText(MainActivity.this, "Error: " + t.getMessage(), Toast.LENGTH_SHORT).show();
+            }
+        });
+    }
+
+    private void updateSongList(List<SpotifyTrack> tracks) {
+        songList.clear();
+        for (SpotifyTrack track : tracks) {
+            Song song = new Song(
+                    track.id,
+                    track.name,
+                    track.getArtistsString(),
+                    track.imageUrl,
+                    track.previewUrl,
+                    ""
+            );
+            songList.add(song);
+        }
+
+        if (!isSearching) {
+            allSongs.clear();
+            allSongs.addAll(songList);
+        }
+
+        adapter.notifyDataSetChanged();
+    }
+
+    @Override
+    public void onItemClick(String trackId) {
+        Log.d(TAG, "Item clicked: " + trackId);
+        spotifyApi.getTrackDetails(trackId).enqueue(new Callback<SpotifyTrack>() {
+            @Override
+            public void onResponse(Call<SpotifyTrack> call, Response<SpotifyTrack> response) {
+                if (response.isSuccessful() && response.body() != null) {
+                    SpotifyTrack track = response.body();
+                    // For simplicity, we play only the selected song
+                    ArrayList<String> playlistTitles = new ArrayList<>();
+                    ArrayList<String> playlistArtists = new ArrayList<>();
+                    ArrayList<String> playlistCovers = new ArrayList<>();
+                    ArrayList<String> playlistPreviews = new ArrayList<>();
+
+                    playlistTitles.add(track.name);
+                    playlistArtists.add(track.getArtistsString());
+                    playlistCovers.add(track.imageUrl);
+                    playlistPreviews.add(track.previewUrl);
+
+                    Intent intent = new Intent(MainActivity.this, PlayerActivity.class);
+                    intent.putStringArrayListExtra("playlist_titles", playlistTitles);
+                    intent.putStringArrayListExtra("playlist_artists", playlistArtists);
+                    intent.putStringArrayListExtra("playlist_covers", playlistCovers);
+                    intent.putStringArrayListExtra("playlist_previews", playlistPreviews);
+                    intent.putExtra("current_index", 0);
+                    startActivity(intent);
+                }
+            }
+
+            @Override
+            public void onFailure(Call<SpotifyTrack> call, Throwable t) {
+                Toast.makeText(MainActivity.this, "Could not load track details", Toast.LENGTH_SHORT).show();
+            }
+        });
+    }
+
+    private void setupRecyclerView() {
+        recyclerView = findViewById(R.id.recyclerView);
+        recyclerView.setLayoutManager(new LinearLayoutManager(this));
+        songList = new ArrayList<>();
+        allSongs = new ArrayList<>();
+        adapter = new MusicAdapter(this, songList);
+        adapter.setOnItemClickListener(this);
+        recyclerView.setAdapter(adapter);
+    }
+
+    // --- Other setup methods are unchanged ---
 
     private void setupDrawer() {
         drawerLayout = findViewById(R.id.drawerLayout);
         navigationView = findViewById(R.id.navigationView);
-
         navigationView.setNavigationItemSelectedListener(this);
-
-        // Setup menu button to open drawer
         TextView btnMenu = findViewById(R.id.btnMenu);
         if (btnMenu != null) {
             btnMenu.setOnClickListener(v -> {
@@ -96,82 +226,50 @@ public class MainActivity extends AppCompatActivity implements NavigationView.On
                 }
             });
         }
-
-        // Setup header views
         View headerView = navigationView.getHeaderView(0);
         TextView tvUserName = headerView.findViewById(R.id.tvUserName);
         TextView tvUserEmail = headerView.findViewById(R.id.tvUserEmail);
-
         tvUserName.setText("Music Lover");
         tvUserEmail.setText("musiclover@zingmp3.vn");
     }
 
-    private void setupRecyclerView() {
-        recyclerView = findViewById(R.id.recyclerView);
-        recyclerView.setLayoutManager(new LinearLayoutManager(this));
-        songList = new ArrayList<>();
-        allSongs = new ArrayList<>();
-        adapter = new MusicAdapter(this, songList);
-        recyclerView.setAdapter(adapter);
-    }
-
     private void setupSearchBar() {
         etSearchBar = findViewById(R.id.etSearch);
-
         if (etSearchBar != null) {
             etSearchBar.addTextChangedListener(new TextWatcher() {
                 @Override
-                public void beforeTextChanged(CharSequence s, int start, int count, int after) {
-                }
+                public void beforeTextChanged(CharSequence s, int start, int count, int after) {}
 
                 @Override
                 public void onTextChanged(CharSequence s, int start, int before, int count) {
                     String query = s.toString().trim();
+                    searchHandler.removeCallbacks(searchRunnable);
 
                     if (query.isEmpty()) {
-                        // Nếu xóa hết text, hiển thị lại tất cả bài hát
                         isSearching = false;
                         songList.clear();
                         songList.addAll(allSongs);
                         adapter.notifyDataSetChanged();
-                    } else if (query.length() >= 2) {
-                        // Tìm kiếm khi nhập ít nhất 2 ký tự
+                    } else {
                         isSearching = true;
-                        searchSongsFromApi(query);
+                        searchRunnable = () -> searchSongs(query);
+                        searchHandler.postDelayed(searchRunnable, SEARCH_DELAY);
                     }
                 }
 
                 @Override
-                public void afterTextChanged(Editable s) {
-                }
-            });
-
-            // Khi focus vào thanh search
-            etSearchBar.setOnFocusChangeListener((v, hasFocus) -> {
-                if (hasFocus) {
-                    etSearchBar.setHint("Nhập tên bài hát, nghệ sĩ...");
-                } else {
-                    etSearchBar.setHint("Tìm kiếm...");
-                }
+                public void afterTextChanged(Editable s) {}
             });
         }
     }
 
     private void setupTopBar() {
         ImageView btnProfile = findViewById(R.id.btnProfile);
-
         if (btnProfile != null) {
             btnProfile.setOnClickListener(v -> {
                 Intent intent = new Intent(this, ProfileActivity.class);
                 startActivity(intent);
             });
-        }
-
-        TextView tvSeeAll = findViewById(R.id.tvSeeAll);
-        if (tvSeeAll != null) {
-            tvSeeAll.setOnClickListener(v ->
-                    Toast.makeText(this, "See all songs", Toast.LENGTH_SHORT).show()
-            );
         }
     }
 
@@ -181,57 +279,33 @@ public class MainActivity extends AppCompatActivity implements NavigationView.On
         TextView tabKPop = findViewById(R.id.tabKPop);
         TextView tabUSUK = findViewById(R.id.tabUSUK);
 
-        // Tab All - Hiển thị bài hát hot
-        if (tabAll != null) {
-            tabAll.setOnClickListener(v -> {
-                resetAllTabs(tabAll, tabVPop, tabKPop, tabUSUK);
-                tabAll.setTextColor(0xFFFFFFFF);
-                tabAll.setBackgroundResource(R.drawable.tab_selected);
+        View.OnClickListener tabClickListener = v -> {
+            resetAllTabs(tabAll, tabVPop, tabKPop, tabUSUK);
+            TextView clickedTab = (TextView) v;
+            clickedTab.setTextColor(0xFFFFFFFF);
+            clickedTab.setBackgroundResource(R.drawable.tab_selected);
+            clearSearchBar();
+            isSearching = false;
 
-                clearSearchBar();
-                loadSongsFromApi();
-                Toast.makeText(this, "Tất cả bài hát hot", Toast.LENGTH_SHORT).show();
-            });
-        }
+            int id = v.getId();
+            if (id == R.id.tabAll) {
+                loadRecommendedSongs();
+            } else if (id == R.id.tabVPop) {
+                searchSongs("V-Pop");
+            } else if (id == R.id.tabKPop) {
+                searchSongs("K-Pop");
+            } else if (id == R.id.tabUSUK) {
+                searchSongs("US-UK");
+            }
+        };
 
-        // Tab V-Pop
-        if (tabVPop != null) {
-            tabVPop.setOnClickListener(v -> {
-                resetAllTabs(tabAll, tabVPop, tabKPop, tabUSUK);
-                tabVPop.setTextColor(0xFFFFFFFF);
-                tabVPop.setBackgroundResource(R.drawable.tab_selected);
+        tabAll.setOnClickListener(tabClickListener);
+        tabVPop.setOnClickListener(tabClickListener);
+        tabKPop.setOnClickListener(tabClickListener);
+        tabUSUK.setOnClickListener(tabClickListener);
 
-                clearSearchBar();
-                filterByGenre("vpop", "Sơn Tùng MTP Hòa Minzy Đen Vâu");
-                Toast.makeText(this, "V-Pop", Toast.LENGTH_SHORT).show();
-            });
-        }
-
-        // Tab K-Pop
-        if (tabKPop != null) {
-            tabKPop.setOnClickListener(v -> {
-                resetAllTabs(tabAll, tabVPop, tabKPop, tabUSUK);
-                tabKPop.setTextColor(0xFFFFFFFF);
-                tabKPop.setBackgroundResource(R.drawable.tab_selected);
-
-                clearSearchBar();
-                filterByGenre("kpop", "BTS Blackpink Twice NewJeans");
-                Toast.makeText(this, "K-Pop", Toast.LENGTH_SHORT).show();
-            });
-        }
-
-        // Tab US-UK
-        if (tabUSUK != null) {
-            tabUSUK.setOnClickListener(v -> {
-                resetAllTabs(tabAll, tabVPop, tabKPop, tabUSUK);
-                tabUSUK.setTextColor(0xFFFFFFFF);
-                tabUSUK.setBackgroundResource(R.drawable.tab_selected);
-
-                clearSearchBar();
-                filterByGenre("usuk", "Taylor Swift Ed Sheeran Ariana Grande");
-                Toast.makeText(this, "US-UK", Toast.LENGTH_SHORT).show();
-            });
-        }
+        tabAll.setTextColor(0xFFFFFFFF);
+        tabAll.setBackgroundResource(R.drawable.tab_selected);
     }
 
     private void setupChatbot(){
@@ -260,214 +334,28 @@ public class MainActivity extends AppCompatActivity implements NavigationView.On
         }
     }
 
-    private void filterByGenre(String genre, String searchQuery) {
-        Log.d(TAG, "Filtering by genre: " + genre);
-
-        Retrofit retrofit = new Retrofit.Builder()
-                .baseUrl("https://api.deezer.com/")
-                .addConverterFactory(GsonConverterFactory.create())
-                .build();
-
-        DeezerApi api = retrofit.create(DeezerApi.class);
-
-        api.searchTrack(searchQuery).enqueue(new Callback<TrackResponse>() {
-            @Override
-            public void onResponse(Call<TrackResponse> call, Response<TrackResponse> response) {
-                if (response.isSuccessful() && response.body() != null) {
-                    Log.d(TAG, "Genre filter results: " + response.body().data.size());
-
-                    songList.clear();
-                    allSongs.clear();
-
-                    if (response.body().data.isEmpty()) {
-                        Toast.makeText(MainActivity.this,
-                                "Không tìm thấy bài hát " + genre.toUpperCase(),
-                                Toast.LENGTH_SHORT).show();
-                    } else {
-                        for (TrackResponse.Track t : response.body().data) {
-                            Song song = new Song(
-                                    t.title,
-                                    t.artist.name,
-                                    t.album.cover,
-                                    t.preview,
-                                    ""
-                            );
-                            songList.add(song);
-                            allSongs.add(song);
-                        }
-
-                        Toast.makeText(MainActivity.this,
-                                "Đã tải " + songList.size() + " bài hát " + genre.toUpperCase(),
-                                Toast.LENGTH_SHORT).show();
-                    }
-
-                    adapter.notifyDataSetChanged();
-                }
-            }
-
-            @Override
-            public void onFailure(Call<TrackResponse> call, Throwable t) {
-                Log.e(TAG, "Genre filter error: " + t.getMessage());
-                Toast.makeText(MainActivity.this,
-                        "Lỗi tải nhạc: " + t.getMessage(),
-                        Toast.LENGTH_SHORT).show();
-            }
-        });
-    }
-
-    private void resetTab(TextView tab) {
-        if (tab != null) {
-            tab.setTextColor(0xFFAAAAAA);
-            tab.setBackgroundResource(R.drawable.tab_unselected);
-        }
-    }
-
-    private void searchSongsFromApi(String query) {
-        Log.d(TAG, "Searching for: " + query);
-
-        Retrofit retrofit = new Retrofit.Builder()
-                .baseUrl("https://api.deezer.com/")
-                .addConverterFactory(GsonConverterFactory.create())
-                .build();
-
-        DeezerApi api = retrofit.create(DeezerApi.class);
-
-        api.searchTrack(query).enqueue(new Callback<TrackResponse>() {
-            @Override
-            public void onResponse(Call<TrackResponse> call, Response<TrackResponse> response) {
-                if (response.isSuccessful() && response.body() != null) {
-                    Log.d(TAG, "Search results: " + response.body().data.size());
-
-                    songList.clear();
-
-                    if (response.body().data.isEmpty()) {
-                        Toast.makeText(MainActivity.this,
-                                "Không tìm thấy kết quả cho \"" + query + "\"",
-                                Toast.LENGTH_SHORT).show();
-                    } else {
-                        for (TrackResponse.Track t : response.body().data) {
-                            Song song = new Song(
-                                    t.title,
-                                    t.artist.name,
-                                    t.album.cover,
-                                    t.preview,
-                                    ""
-                            );
-                            songList.add(song);
-                        }
-
-                        // Chỉ cập nhật allSongs nếu không đang tìm kiếm từ search bar
-                        if (!isSearching) {
-                            allSongs.clear();
-                            allSongs.addAll(songList);
-                        }
-                    }
-
-                    adapter.notifyDataSetChanged();
-                }
-            }
-
-            @Override
-            public void onFailure(Call<TrackResponse> call, Throwable t) {
-                Log.e(TAG, "Search error: " + t.getMessage());
-                Toast.makeText(MainActivity.this,
-                        "Lỗi: " + t.getMessage(),
-                        Toast.LENGTH_SHORT).show();
-            }
-        });
-    }
-
-    private void loadSongsFromApi() {
-        Log.d(TAG, "Loading songs from Deezer API...");
-
-        Retrofit retrofit = new Retrofit.Builder()
-                .baseUrl("https://api.deezer.com/")
-                .addConverterFactory(GsonConverterFactory.create())
-                .build();
-
-        DeezerApi api = retrofit.create(DeezerApi.class);
-
-        api.getChart().enqueue(new Callback<TrackResponse>() {
-            @Override
-            public void onResponse(Call<TrackResponse> call, Response<TrackResponse> response) {
-                if (response.isSuccessful() && response.body() != null) {
-                    Log.d(TAG, "API Response successful! Songs: " + response.body().data.size());
-
-                    songList.clear();
-                    allSongs.clear();
-
-                    for (TrackResponse.Track t : response.body().data) {
-                        Song song = new Song(
-                                t.title,
-                                t.artist.name,
-                                t.album.cover,
-                                t.preview,
-                                ""
-                        );
-                        songList.add(song);
-                        allSongs.add(song);
-                    }
-
-                    adapter.notifyDataSetChanged();
-
-                    if (miniPlayer != null && !songList.isEmpty()) {
-                        miniPlayer.setVisibility(View.VISIBLE);
-                        if (tvMiniPlayerTitle != null) {
-                            tvMiniPlayerTitle.setText(songList.get(0).title);
-                        }
-                        if (tvMiniPlayerArtist != null) {
-                            tvMiniPlayerArtist.setText(songList.get(0).artist);
-                        }
-                    }
-
-                    Toast.makeText(MainActivity.this,
-                            "Loaded " + songList.size() + " songs!",
-                            Toast.LENGTH_SHORT).show();
-                }
-            }
-
-            @Override
-            public void onFailure(Call<TrackResponse> call, Throwable t) {
-                Log.e(TAG, "API error: " + t.getMessage());
-                Toast.makeText(MainActivity.this,
-                        "Error: " + t.getMessage(),
-                        Toast.LENGTH_SHORT).show();
-            }
-        });
-    }
-
     @Override
     public boolean onNavigationItemSelected(@NonNull MenuItem item) {
         int id = item.getItemId();
-
         if (id == R.id.nav_home) {
-            Toast.makeText(this, "Trang chủ", Toast.LENGTH_SHORT).show();
+            // Already home
         } else if (id == R.id.nav_library) {
-            Intent intent = new Intent(this, LibraryActivity.class);
-            startActivity(intent);
+            startActivity(new Intent(this, LibraryActivity.class));
         } else if (id == R.id.nav_favorites) {
-            Intent intent = new Intent(this, FavoritesActivity.class);
-            startActivity(intent);
+            startActivity(new Intent(this, FavoritesActivity.class));
         } else if (id == R.id.nav_playlists) {
-            Intent intent = new Intent(this, PlaylistsActivity.class);
-            startActivity(intent);
+            startActivity(new Intent(this, PlaylistsActivity.class));
         } else if (id == R.id.nav_history) {
-            Intent intent = new Intent(this, HistoryActivity.class);
-            startActivity(intent);
+            startActivity(new Intent(this, HistoryActivity.class));
         } else if (id == R.id.nav_profile) {
-            Intent intent = new Intent(this, ProfileActivity.class);
-            startActivity(intent);
+            startActivity(new Intent(this, ProfileActivity.class));
         } else if (id == R.id.nav_settings) {
-            Intent intent = new Intent(this, SettingsActivity.class);
-            startActivity(intent);
+            startActivity(new Intent(this, SettingsActivity.class));
         } else if (id == R.id.nav_about) {
-            Intent intent = new Intent(this, AboutActivity.class);
-            startActivity(intent);
+            startActivity(new Intent(this, AboutActivity.class));
         } else if (id == R.id.nav_logout) {
             Toast.makeText(this, "Đăng xuất", Toast.LENGTH_SHORT).show();
-            // TODO: Implement logout logic
         }
-
         drawerLayout.closeDrawer(GravityCompat.START);
         return true;
     }

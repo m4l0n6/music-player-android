@@ -1,6 +1,9 @@
 package com.example.musicplayer;
 
+import android.content.Intent;
 import android.os.Bundle;
+import android.os.Handler;
+import android.os.Looper;
 import android.text.Editable;
 import android.text.TextWatcher;
 import android.util.Log;
@@ -13,6 +16,12 @@ import androidx.appcompat.app.AppCompatActivity;
 import androidx.recyclerview.widget.LinearLayoutManager;
 import androidx.recyclerview.widget.RecyclerView;
 
+import com.example.musicplayer.api.SpotifyApi;
+import com.example.musicplayer.api.SpotifySearchResponse;
+import com.example.musicplayer.api.SpotifyTrack;
+import com.example.musicplayer.playlist.PlayerActivity;
+import com.google.gson.JsonObject;
+
 import java.util.ArrayList;
 
 import retrofit2.Call;
@@ -21,9 +30,12 @@ import retrofit2.Response;
 import retrofit2.Retrofit;
 import retrofit2.converter.gson.GsonConverterFactory;
 
-public class SearchActivity extends AppCompatActivity {
+// Implement the click listener
+public class SearchActivity extends AppCompatActivity implements MusicAdapter.OnItemClickListener {
 
     private static final String TAG = "SearchActivity";
+    private static final String API_BASE_URL = "http://192.168.30.28:5030/";
+    private static final long SEARCH_DELAY = 500; // 500ms
 
     private EditText etSearch;
     private TextView btnBack;
@@ -32,14 +44,27 @@ public class SearchActivity extends AppCompatActivity {
     private ArrayList<Song> searchResults;
     private MusicAdapter searchAdapter;
 
+    private SpotifyApi spotifyApi;
+    private Handler searchHandler = new Handler(Looper.getMainLooper());
+    private Runnable searchRunnable;
+
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
         setContentView(R.layout.activity_search);
 
+        setupRetrofit();
         initViews();
         setupRecyclerView();
         setupSearchListener();
+    }
+    
+    private void setupRetrofit() {
+        Retrofit retrofit = new Retrofit.Builder()
+                .baseUrl(API_BASE_URL)
+                .addConverterFactory(GsonConverterFactory.create())
+                .build();
+        spotifyApi = retrofit.create(SpotifyApi.class);
     }
 
     private void initViews() {
@@ -48,10 +73,7 @@ public class SearchActivity extends AppCompatActivity {
         tvNoResults = findViewById(R.id.tvNoResults);
         recyclerViewSearch = findViewById(R.id.recyclerViewSearch);
 
-        // Focus vào ô tìm kiếm khi mở activity
         etSearch.requestFocus();
-
-        // Nút back
         if (btnBack != null) {
             btnBack.setOnClickListener(v -> finish());
         }
@@ -61,21 +83,24 @@ public class SearchActivity extends AppCompatActivity {
         recyclerViewSearch.setLayoutManager(new LinearLayoutManager(this));
         searchResults = new ArrayList<>();
         searchAdapter = new MusicAdapter(this, searchResults);
+        searchAdapter.setOnItemClickListener(this); // Set the listener
         recyclerViewSearch.setAdapter(searchAdapter);
     }
 
     private void setupSearchListener() {
         etSearch.addTextChangedListener(new TextWatcher() {
             @Override
-            public void beforeTextChanged(CharSequence s, int start, int count, int after) {
-            }
+            public void beforeTextChanged(CharSequence s, int start, int count, int after) {}
 
             @Override
             public void onTextChanged(CharSequence s, int start, int before, int count) {
                 String query = s.toString().trim();
+                searchHandler.removeCallbacks(searchRunnable);
+
                 if (query.length() >= 2) {
-                    searchSongs(query);
-                } else if (query.isEmpty()) {
+                    searchRunnable = () -> searchSongs(query);
+                    searchHandler.postDelayed(searchRunnable, SEARCH_DELAY);
+                } else {
                     searchResults.clear();
                     searchAdapter.notifyDataSetChanged();
                     tvNoResults.setVisibility(View.GONE);
@@ -83,62 +108,101 @@ public class SearchActivity extends AppCompatActivity {
             }
 
             @Override
-            public void afterTextChanged(Editable s) {
-            }
+            public void afterTextChanged(Editable s) {}
         });
     }
 
     private void searchSongs(String query) {
-        Log.d(TAG, "Searching for: " + query);
+        Log.d(TAG, "Searching Spotify for: " + query);
 
-        Retrofit retrofit = new Retrofit.Builder()
-                .baseUrl("https://api.deezer.com/")
-                .addConverterFactory(GsonConverterFactory.create())
-                .build();
+        JsonObject requestBody = new JsonObject();
+        requestBody.addProperty("query", query);
+        requestBody.addProperty("limit", 20);
 
-        DeezerApi api = retrofit.create(DeezerApi.class);
-
-        api.searchTrack(query).enqueue(new Callback<TrackResponse>() {
+        spotifyApi.searchTracks(requestBody).enqueue(new Callback<SpotifySearchResponse>() {
             @Override
-            public void onResponse(Call<TrackResponse> call, Response<TrackResponse> response) {
-                if (response.isSuccessful() && response.body() != null) {
-                    Log.d(TAG, "Search results: " + response.body().data.size());
+            public void onResponse(Call<SpotifySearchResponse> call, Response<SpotifySearchResponse> response) {
+                searchResults.clear();
+                if (response.isSuccessful() && response.body() != null && response.body().tracks != null) {
+                    Log.d(TAG, "Search results: " + response.body().tracks.size());
 
-                    searchResults.clear();
-
-                    if (response.body().data.isEmpty()) {
+                    if (response.body().tracks.isEmpty()) {
                         tvNoResults.setVisibility(View.VISIBLE);
                         tvNoResults.setText("Không tìm thấy kết quả cho \"" + query + "\"");
                     } else {
                         tvNoResults.setVisibility(View.GONE);
-                        for (TrackResponse.Track t : response.body().data) {
+                        for (SpotifyTrack track : response.body().tracks) {
+                            // Use the correct 6-argument constructor
                             Song song = new Song(
-                                    t.title,
-                                    t.artist.name,
-                                    t.album.cover,
-                                    t.preview,
-                                    ""
+                                    track.id,
+                                    track.name,
+                                    track.getArtistsString(),
+                                    track.imageUrl,
+                                    track.previewUrl,
+                                    "" // Lyrics are empty for now
                             );
                             searchResults.add(song);
                         }
                     }
-
-                    searchAdapter.notifyDataSetChanged();
                 } else {
                     Log.e(TAG, "Search failed: " + response.code());
                     tvNoResults.setVisibility(View.VISIBLE);
                     tvNoResults.setText("Lỗi tìm kiếm");
                 }
+                searchAdapter.notifyDataSetChanged();
             }
 
             @Override
-            public void onFailure(Call<TrackResponse> call, Throwable t) {
+            public void onFailure(Call<SpotifySearchResponse> call, Throwable t) {
                 Log.e(TAG, "Search error: " + t.getMessage());
-                Toast.makeText(SearchActivity.this,
-                        "Lỗi: " + t.getMessage(),
-                        Toast.LENGTH_SHORT).show();
+                Toast.makeText(SearchActivity.this, "Lỗi: " + t.getMessage(), Toast.LENGTH_SHORT).show();
                 tvNoResults.setVisibility(View.VISIBLE);
                 tvNoResults.setText("Không thể kết nối");
+            }
+        });
+    }
+    
+    @Override
+    public void onItemClick(String trackId) {
+        Log.d(TAG, "Item clicked, fetching details for: " + trackId);
+        
+        spotifyApi.getTrackDetails(trackId).enqueue(new Callback<SpotifyTrack>() {
+            @Override
+            public void onResponse(Call<SpotifyTrack> call, Response<SpotifyTrack> response) {
+                if (response.isSuccessful() && response.body() != null) {
+                    SpotifyTrack track = response.body();
+
+                    if (track.previewUrl == null || track.previewUrl.isEmpty()) {
+                        Toast.makeText(SearchActivity.this, "Bài hát này không có preview.", Toast.LENGTH_SHORT).show();
+                        return;
+                    }
+
+                    // For simplicity, we create a playlist of one song and play it
+                    ArrayList<String> playlistTitles = new ArrayList<>();
+                    ArrayList<String> playlistArtists = new ArrayList<>();
+                    ArrayList<String> playlistCovers = new ArrayList<>();
+                    ArrayList<String> playlistPreviews = new ArrayList<>();
+
+                    playlistTitles.add(track.name);
+                    playlistArtists.add(track.getArtistsString());
+                    playlistCovers.add(track.imageUrl);
+                    playlistPreviews.add(track.previewUrl);
+
+                    Intent intent = new Intent(SearchActivity.this, PlayerActivity.class);
+                    intent.putStringArrayListExtra("playlist_titles", playlistTitles);
+                    intent.putStringArrayListExtra("playlist_artists", playlistArtists);
+                    intent.putStringArrayListExtra("playlist_covers", playlistCovers);
+                    intent.putStringArrayListExtra("playlist_previews", playlistPreviews);
+                    intent.putExtra("current_index", 0);
+                    startActivity(intent);
+                } else {
+                    Toast.makeText(SearchActivity.this, "Could not load track details", Toast.LENGTH_SHORT).show();
+                }
+            }
+
+            @Override
+            public void onFailure(Call<SpotifyTrack> call, Throwable t) {
+                Toast.makeText(SearchActivity.this, "API Failure: " + t.getMessage(), Toast.LENGTH_SHORT).show();
             }
         });
     }

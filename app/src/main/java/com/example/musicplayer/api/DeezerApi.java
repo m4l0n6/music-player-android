@@ -1,4 +1,6 @@
-package com.example.musicplayer;
+package com.example.musicplayer.api;
+
+import com.example.musicplayer.TrackResponse;
 
 import retrofit2.Call;
 import retrofit2.http.GET;

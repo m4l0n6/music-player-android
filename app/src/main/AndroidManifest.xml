@@ -2,7 +2,6 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:tools="http://schemas.android.com/tools">
 
-    <!-- Quyền Internet để phát nhạc và lấy dữ liệu -->
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
 
@@ -15,23 +14,31 @@
         android:usesCleartextTraffic="true"
         tools:targetApi="31">
 
-        <!-- SearchActivity - THÊM DÒNG NÀY -->
-        <activity
-            android:name=".SearchActivity"
-            android:windowSoftInputMode="adjustResize"
-            android:exported="false" />
-
-        <!-- Màn hình đăng nhập (màn hình chính khi mở app) -->
         <activity
             android:name=".login.LoginActivity"
             android:exported="true"
-            android:screenOrientation="portrait"
-            tools:ignore="MissingClass">
+            android:launchMode="singleTask"
+            android:screenOrientation="portrait">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:scheme="http" android:host="localhost" android:port="5030" android:pathPrefix="/api/spotify/auth/callback" />
+            </intent-filter>
         </activity>
+
+        <activity
+            android:name=".MainActivity"
+            android:screenOrientation="portrait" />
+
+        <activity
+            android:name=".SearchActivity"
+            android:windowSoftInputMode="adjustResize" />
+
         <activity android:name=".profile.ProfileActivity" />
         <activity android:name=".libary.LibraryActivity" />
         <activity android:name=".profile.FavoritesActivity" />
@@ -40,26 +47,18 @@
         <activity android:name=".profile.SettingsActivity" />
         <activity android:name=".profile.AboutActivity" />
 
-
-        <!-- Màn hình danh sách nhạc -->
-        <activity
-            android:name=".MainActivity"
-            android:screenOrientation="portrait"
-            tools:ignore="MissingClass" />
-
-        <!-- Màn hình phát nhạc -->
         <activity
             android:name=".playlist.PlayerActivity"
-            android:screenOrientation="portrait"
-            tools:ignore="MissingClass" />
+            android:screenOrientation="portrait" />
+
         <service
             android:name=".MusicService"
             android:enabled="true"
             android:exported="false"
             android:foregroundServiceType="mediaPlayback" />
 
-        <activity android:name=".ChatbotActivity"
-            android:exported="true"
+        <activity
+            android:name=".chatbot.ChatbotActivity"
             android:label="Chatbot" />
 
     </application>
